@@ -1,6 +1,6 @@
 <svg width="1200" height="900" viewBox="0 0 1200 900" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="900" fill="#101010"/>
-  <g opacity="0.24" stroke="#f6f1e7" stroke-width="6">
+  <rect width="1200" height="900" fill="transparent"/>
+  <g opacity="0.5" stroke="#ffffff" stroke-width="7">
     <path d="M120 450H1080"/>
     <circle cx="600" cy="450" r="116"/>
     <path d="M120 120H1080V780H120V120Z"/>
@@ -11,9 +11,8 @@
     <path d="M205 407H245V493H205"/>
     <path d="M995 407H955V493H995"/>
   </g>
-  <g opacity="0.18" stroke="#19c7b5" stroke-width="4">
+  <g opacity="0.32" stroke="#0096c7" stroke-width="5">
     <path d="M42 42H1158V858H42V42Z"/>
     <path d="M600 42V858"/>
   </g>
 </svg>
-

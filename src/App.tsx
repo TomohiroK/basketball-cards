@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowRightLeft,
   BadgePlus,
@@ -42,6 +42,8 @@ type Phase = "deal" | "dealing" | "exchange" | "ready" | "resolved";
 type DealTarget = "playerA" | "playerB" | "community";
 type Language = "en" | "ja";
 type GuideGroupKey = "shoot" | "defense" | "modifier";
+type NpcExchangeStatus = "idle" | "thinking" | "done";
+type ExchangeOrder = readonly [PlayerId, PlayerId];
 
 interface CardVisual {
   name: string;
@@ -51,6 +53,11 @@ interface CardVisual {
 interface ExchangeState {
   selectedIndexes: number[];
   committed: boolean;
+}
+
+interface NpcExchangeState {
+  changedCount: number;
+  status: NpcExchangeStatus;
 }
 
 interface BoostBadge {
@@ -69,10 +76,17 @@ interface Translation {
     tableLabel: string;
     symbolGuide: string;
   };
+  control: {
+    label: string;
+    dealHint: string;
+    exchangeHint: string;
+    readyHint: string;
+    resolvedHint: string;
+  };
   actions: {
     deal: string;
     dealing: string;
-    newHand: string;
+    newGame: string;
     play: string;
   };
   deck: {
@@ -90,6 +104,19 @@ interface Translation {
     keep: string;
     done: string;
   };
+  decision: {
+    dealTitle: string;
+    dealText: string;
+    dealingTitle: string;
+    dealingText: (step: number, total: number) => string;
+    yourTurnTitle: string;
+    yourTurnText: string;
+    npcTurnTitle: string;
+    npcTurnText: string;
+    readyTitle: string;
+    readyText: string;
+    npcAction: (count: number) => string;
+  };
   phase: Record<Phase | "empty", string>;
   status: {
     pressDeal: string;
@@ -100,9 +127,15 @@ interface Translation {
     community: string;
     communityCards: string;
     hand: (index: number) => string;
+    hiddenCard: (index: number) => string;
     board: (index: number) => string;
     emptySlot: (slotLabel: string) => string;
     exchangeOptions: (playerId: PlayerId) => string;
+    npcWaiting: string;
+    npcThinking: string;
+    npcChanged: (count: number) => string;
+    npcReady: string;
+    npcResolved: string;
   };
   card: {
     invalid: string;
@@ -128,6 +161,18 @@ interface Translation {
     beats: (shootName: string, offenseValue: number, defenseName: string, defenseValue: number, scoreValue: number) => string;
     noDefense: (shootName: string, scoreValue: number) => string;
   };
+  report: {
+    title: string;
+    finalScore: string;
+    playDetails: string;
+    winnerReasonScore: string;
+    winnerReasonCard: string;
+    winner: (playerId: PlayerId) => string;
+    tieNumber: string;
+    noAttempts: string;
+    newGame: string;
+    outcome: Record<ScoringResult["source"], string>;
+  };
 }
 
 const PLAYER_KEYS = {
@@ -136,6 +181,8 @@ const PLAYER_KEYS = {
 } as const;
 
 const DEAL_STEP_MS = 280;
+const NPC_EXCHANGE_DELAY_MS = 960;
+const NPC_EXCHANGE_SCORE_THRESHOLD = 2;
 const DEAL_SEQUENCE: readonly DealTarget[] = [
   "playerA",
   "playerB",
@@ -163,23 +210,45 @@ const KIND_ICONS: Record<CardKind, LucideIcon> = {
 };
 
 const LANGUAGE_STORAGE_KEY = "basketball-poker-language";
+const INITIAL_EXCHANGE_ORDER: ExchangeOrder = ["A", "B"];
+const INITIAL_NPC_EXCHANGE: NpcExchangeState = {
+  changedCount: 0,
+  status: "idle",
+};
+const CONFETTI_VARIANT_COUNT = 10;
+const VERTICAL_CONFETTI_PIECES = Array.from({ length: 72 }, (_, index) => index);
+const SIDE_CONFETTI_PIECES = Array.from({ length: 56 }, (_, index) => index);
+const PRIMARY_SHOOT_KINDS: ReadonlySet<CardKind> = new Set([
+  "layup",
+  "dunk",
+  "threePoint",
+  "deepThree",
+]);
+const COUNTER_DEFENSE_KINDS: ReadonlySet<CardKind> = new Set(["rimProtect", "faceGuard"]);
 
 const TRANSLATIONS: Record<Language, Translation> = {
   en: {
     app: {
       gameStatus: "Game status",
       productName: "Basketball Poker",
-      title: "Prototype Court",
+      title: "Court Duel",
       languageTitle: "Switch language",
       languageButton: "日本語",
       dealTitle: "Deal one card at a time",
       tableLabel: "Texas Hold'em style table",
       symbolGuide: "Card symbol guide",
     },
+    control: {
+      label: "Game control",
+      dealHint: "Start a fresh hand.",
+      exchangeHint: "Choose your exchange below.",
+      readyHint: "Resolve this hand.",
+      resolvedHint: "Start the next hand.",
+    },
     actions: {
       deal: "Deal",
       dealing: "Dealing",
-      newHand: "New Hand",
+      newGame: "New Game",
       play: "Play",
     },
     deck: {
@@ -197,6 +266,20 @@ const TRANSLATIONS: Record<Language, Translation> = {
       keep: "Keep hand",
       done: "Exchange done",
     },
+    decision: {
+      dealTitle: "NEW HAND",
+      dealText: "Deal one card at a time.",
+      dealingTitle: "DEALING",
+      dealingText: (step, total) => `Card ${step}/${total}`,
+      yourTurnTitle: "YOUR TURN",
+      yourTurnText: "Choose 0-2 private cards.",
+      npcTurnTitle: "NPC TURN",
+      npcTurnText: "NPC is choosing a hidden exchange.",
+      readyTitle: "BOTH READY",
+      readyText: "Press Play to reveal the result.",
+      npcAction: (count) =>
+        count === 0 ? "NPC kept hand" : `NPC changed ${count} ${count === 1 ? "card" : "cards"}`,
+    },
     phase: {
       deal: "empty",
       dealing: "dealing",
@@ -210,13 +293,20 @@ const TRANSLATIONS: Record<Language, Translation> = {
       dealing: (step, total) => `Dealing ${step}/${total}`,
     },
     table: {
-      player: (playerId) => `Player ${playerId}`,
+      player: (playerId) => (playerId === "A" ? "You" : "NPC"),
       community: "Community",
       communityCards: "Community cards",
       hand: (index) => `Hand ${index}`,
+      hiddenCard: (index) => `Hidden ${index}`,
       board: (index) => `Board ${index}`,
       emptySlot: (slotLabel) => `${slotLabel} empty`,
       exchangeOptions: (playerId) => `Player ${playerId} exchange options`,
+      npcWaiting: "NPC ready",
+      npcThinking: "NPC choosing...",
+      npcChanged: (count) =>
+        count === 0 ? "NPC kept hand" : `NPC changed ${count} ${count === 1 ? "card" : "cards"}`,
+      npcReady: "NPC ready",
+      npcResolved: "NPC hand hidden",
     },
     card: {
       invalid: "Invalid",
@@ -250,8 +340,8 @@ const TRANSLATIONS: Record<Language, Translation> = {
     },
     score: {
       draw: "Draw",
-      player: (playerId) => `Player ${playerId}`,
-      wonByCard: (playerId) => `Player ${playerId} won by Card`,
+      player: (playerId) => (playerId === "A" ? "You" : "NPC"),
+      wonByCard: (playerId) => `${playerId === "A" ? "You" : "NPC"} won by Card`,
     },
     resolution: {
       attempts: "Resolution attempts",
@@ -268,22 +358,46 @@ const TRANSLATIONS: Record<Language, Translation> = {
       noDefense: (shootName, scoreValue) =>
         `${shootName}: no matching defense, scores ${scoreValue}.`,
     },
+    report: {
+      title: "GAME REPORT",
+      finalScore: "Final score",
+      playDetails: "Play details",
+      winnerReasonScore: "Higher score",
+      winnerReasonCard: "Won by Card",
+      winner: (playerId) => (playerId === "A" ? "You Win!" : "NPC Wins!"),
+      tieNumber: "Card",
+      noAttempts: "No scoring attempt.",
+      newGame: "New Game",
+      outcome: {
+        shoot: "Made shot",
+        foulFreeThrows: "Foul conversion",
+        andOne: "And 1",
+        none: "No score",
+      },
+    },
   },
   ja: {
     app: {
       gameStatus: "ゲーム状況",
       productName: "バスケットボールポーカー",
-      title: "プロトタイプコート",
+      title: "コートデュエル",
       languageTitle: "言語を切り替え",
       languageButton: "English",
       dealTitle: "1枚ずつ配る",
       tableLabel: "テキサスホールデム形式のテーブル",
       symbolGuide: "カードシンボルガイド",
     },
+    control: {
+      label: "ゲーム操作",
+      dealHint: "新しい手札を始めます。",
+      exchangeHint: "下の自分の手札から交換を選びます。",
+      readyHint: "この手札を判定します。",
+      resolvedHint: "次の手札を始めます。",
+    },
     actions: {
       deal: "ディール",
       dealing: "配布中",
-      newHand: "新しい手札",
+      newGame: "ニューゲーム",
       play: "プレイ",
     },
     deck: {
@@ -301,6 +415,19 @@ const TRANSLATIONS: Record<Language, Translation> = {
       keep: "キープ",
       done: "交換完了",
     },
+    decision: {
+      dealTitle: "ニューゲーム",
+      dealText: "1枚ずつ配布します。",
+      dealingTitle: "配布中",
+      dealingText: (step, total) => `${step}/${total} 枚目`,
+      yourTurnTitle: "あなたのターン",
+      yourTurnText: "手札から0-2枚を選びます。",
+      npcTurnTitle: "NPCのターン",
+      npcTurnText: "NPCが非公開で交換を選んでいます。",
+      readyTitle: "両者準備完了",
+      readyText: "プレイで判定します。",
+      npcAction: (count) => (count === 0 ? "NPCキープ" : `NPC ${count}枚交換`),
+    },
     phase: {
       deal: "未配布",
       dealing: "配布中",
@@ -314,13 +441,19 @@ const TRANSLATIONS: Record<Language, Translation> = {
       dealing: (step, total) => `配布中 ${step}/${total}`,
     },
     table: {
-      player: (playerId) => `Player ${playerId}`,
+      player: (playerId) => (playerId === "A" ? "あなた" : "NPC"),
       community: "場",
       communityCards: "場のカード",
       hand: (index) => `手札 ${index}`,
+      hiddenCard: (index) => `非公開 ${index}`,
       board: (index) => `場 ${index}`,
       emptySlot: (slotLabel) => `${slotLabel} 空き`,
       exchangeOptions: (playerId) => `Player ${playerId} の交換操作`,
+      npcWaiting: "NPC準備完了",
+      npcThinking: "NPC選択中...",
+      npcChanged: (count) => (count === 0 ? "NPCキープ" : `NPC ${count}枚交換`),
+      npcReady: "NPC準備完了",
+      npcResolved: "NPC手札は非公開",
     },
     card: {
       invalid: "無効",
@@ -354,8 +487,8 @@ const TRANSLATIONS: Record<Language, Translation> = {
     },
     score: {
       draw: "引き分け",
-      player: (playerId) => `Player ${playerId}`,
-      wonByCard: (playerId) => `Player ${playerId} がカード差で勝利`,
+      player: (playerId) => (playerId === "A" ? "あなた" : "NPC"),
+      wonByCard: (playerId) => `${playerId === "A" ? "あなた" : "NPC"} がカード差で勝利`,
     },
     resolution: {
       attempts: "判定トラック",
@@ -372,6 +505,23 @@ const TRANSLATIONS: Record<Language, Translation> = {
       noDefense: (shootName, scoreValue) =>
         `${shootName}: 対応する守備なし、${scoreValue}点。`,
     },
+    report: {
+      title: "ゲームレポート",
+      finalScore: "最終スコア",
+      playDetails: "プレイ詳細",
+      winnerReasonScore: "スコア差",
+      winnerReasonCard: "カード差",
+      winner: (playerId) => (playerId === "A" ? "あなたの勝利!" : "NPCの勝利!"),
+      tieNumber: "カード",
+      noAttempts: "得点プレイなし。",
+      newGame: "ニューゲーム",
+      outcome: {
+        shoot: "シュート成功",
+        foulFreeThrows: "ファール変換",
+        andOne: "And 1",
+        none: "無得点",
+      },
+    },
   },
 };
 
@@ -387,6 +537,9 @@ export default function App() {
   const [dealingStep, setDealingStep] = useState(0);
   const [exchangeState, setExchangeState] =
     useState<Record<PlayerId, ExchangeState>>(INITIAL_EXCHANGE);
+  const [exchangeOrder, setExchangeOrder] = useState<ExchangeOrder>(INITIAL_EXCHANGE_ORDER);
+  const [npcExchange, setNpcExchange] = useState<NpcExchangeState>(INITIAL_NPC_EXCHANGE);
+  const npcExchangeTimerRef = useRef<number | undefined>(undefined);
   const t = TRANSLATIONS[language];
   const resolution = useMemo(
     () => (phase === "resolved" ? resolveGame(gameState) : undefined),
@@ -397,9 +550,10 @@ export default function App() {
     () => getPublicInvalidDuplicateCardIds(gameState.community),
     [gameState.community],
   );
-  const dealtCount =
-    gameState.playerA.length + gameState.playerB.length + gameState.community.length + gameState.discards.length;
-
+  const activeExchangePlayer = useMemo(
+    () => getActiveExchangePlayer(phase, exchangeOrder, exchangeState, npcExchange),
+    [exchangeOrder, exchangeState, npcExchange, phase],
+  );
   useEffect(() => {
     document.documentElement.lang = language;
 
@@ -410,13 +564,18 @@ export default function App() {
     }
   }, [language]);
 
+  useEffect(() => () => clearNpcExchangeTimer(npcExchangeTimerRef), []);
+
   async function startDealSequence() {
     if (phase === "dealing") {
       return;
     }
 
+    clearNpcExchangeTimer(npcExchangeTimerRef);
+
     const emptyGame = createEmptyGame();
     const deck = [...emptyGame.deck];
+    const nextExchangeOrder = createRandomExchangeOrder();
     const dealState = {
       playerA: [] as Card[],
       playerB: [] as Card[],
@@ -424,6 +583,8 @@ export default function App() {
     };
 
     setExchangeState(INITIAL_EXCHANGE);
+    setExchangeOrder(nextExchangeOrder);
+    setNpcExchange(INITIAL_NPC_EXCHANGE);
     setDealingStep(0);
     setPhase("dealing");
     publishDealState(deck, dealState);
@@ -442,7 +603,20 @@ export default function App() {
       setDealingStep(index + 1);
     }
 
+    const dealtGameState: GameState = {
+      deck: [...deck],
+      playerA: [...dealState.playerA],
+      playerB: [...dealState.playerB],
+      community: [...dealState.community],
+      discards: [],
+    };
+
+    setGameState(dealtGameState);
     setPhase("exchange");
+
+    if (nextExchangeOrder[0] === "B") {
+      startNpcExchangeTurn(dealtGameState);
+    }
   }
 
   function publishDealState(
@@ -459,7 +633,7 @@ export default function App() {
   }
 
   function toggleExchangeCard(playerId: PlayerId, cardIndex: number) {
-    if (phase !== "exchange") {
+    if (phase !== "exchange" || activeExchangePlayer !== playerId) {
       return;
     }
 
@@ -495,33 +669,65 @@ export default function App() {
   }
 
   function commitExchange(playerId: PlayerId) {
-    if (phase !== "exchange") {
+    if (phase !== "exchange" || playerId !== "A" || activeExchangePlayer !== "A") {
       return;
     }
 
-    const selectedIndexes = exchangeState[playerId].selectedIndexes;
+    const selectedIndexes = exchangeState.A.selectedIndexes;
+    const gameAfterUserExchange =
+      selectedIndexes.length > 0
+        ? exchangeCards(gameState, PLAYER_KEYS.A, selectedIndexes)
+        : gameState;
 
-    if (selectedIndexes.length > 0) {
-      setGameState((currentGameState) =>
-        exchangeCards(currentGameState, PLAYER_KEYS[playerId], selectedIndexes),
-      );
+    clearNpcExchangeTimer(npcExchangeTimerRef);
+    setGameState(gameAfterUserExchange);
+    setExchangeState((current) => ({
+      ...current,
+      A: {
+        selectedIndexes: [],
+        committed: true,
+      },
+    }));
+
+    if (!exchangeState.B.committed) {
+      startNpcExchangeTurn(gameAfterUserExchange);
+      return;
     }
 
-    setExchangeState((current) => {
-      const next = {
-        ...current,
-        [playerId]: {
-          selectedIndexes: [],
-          committed: true,
-        },
-      };
+    setPhase("ready");
+  }
 
-      if (next.A.committed && next.B.committed) {
-        window.setTimeout(() => setPhase("ready"), 0);
-      }
+  function startNpcExchangeTurn(sourceGameState: GameState) {
+    const npcSelectedIndexes = chooseNpcExchangeIndexes(sourceGameState.playerB, sourceGameState.community);
 
-      return next;
-    });
+    clearNpcExchangeTimer(npcExchangeTimerRef);
+    setNpcExchange({ changedCount: 0, status: "thinking" });
+
+    npcExchangeTimerRef.current = window.setTimeout(() => {
+      const gameAfterNpcExchange =
+        npcSelectedIndexes.length > 0
+          ? exchangeCards(sourceGameState, PLAYER_KEYS.B, npcSelectedIndexes)
+          : sourceGameState;
+
+      setGameState(gameAfterNpcExchange);
+      setExchangeState((current) => {
+        const next = {
+          ...current,
+          B: {
+            selectedIndexes: [],
+            committed: true,
+          },
+        };
+
+        if (next.A.committed && next.B.committed) {
+          window.setTimeout(() => setPhase("ready"), 0);
+        }
+
+        return next;
+      });
+      setNpcExchange({ changedCount: npcSelectedIndexes.length, status: "done" });
+      npcExchangeTimerRef.current = undefined;
+    }, NPC_EXCHANGE_DELAY_MS);
   }
 
   function resolveRound() {
@@ -537,65 +743,33 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="broadcast-bar" aria-label={t.app.gameStatus}>
-        <div>
-          <p className="eyebrow">{t.app.productName}</p>
-          <h1>{t.app.title}</h1>
-        </div>
-        <div className="action-row">
-          <button
-            className="icon-button language-button"
-            type="button"
-            onClick={toggleLanguage}
-            title={t.app.languageTitle}
-            aria-label={t.app.languageTitle}
-          >
-            <Languages aria-hidden="true" />
-            <span>{t.app.languageButton}</span>
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={startDealSequence}
-            disabled={phase === "dealing"}
-            title={t.app.dealTitle}
-          >
-            <Shuffle aria-hidden="true" />
-            <span>{formatDealButtonLabel(phase, t)}</span>
-          </button>
-          <button
-            className="icon-button primary"
-            type="button"
-            onClick={resolveRound}
-            disabled={phase !== "ready"}
-            title={t.actions.play}
-          >
-            <Play aria-hidden="true" />
-            <span>{t.actions.play}</span>
-          </button>
-        </div>
-      </section>
-
-      <section className="score-band" aria-live="polite">
-        {resolution ? (
-          <Scoreboard resolution={resolution} t={t} />
-        ) : (
-          <PregameStatus dealingStep={dealingStep} phase={phase} t={t} />
-        )}
-      </section>
-
-      <DeckStatus remainingCount={gameState.deck.length} dealtCount={dealtCount} t={t} />
-
+    <main className={`app-shell phase-${phase}`}>
+      <button
+        className="floating-language"
+        type="button"
+        onClick={toggleLanguage}
+        title={t.app.languageTitle}
+        aria-label={t.app.languageTitle}
+      >
+        <Languages aria-hidden="true" />
+        <span>{t.app.languageButton}</span>
+      </button>
       <section className="table-zone" aria-label={t.app.tableLabel}>
         <PlayerPanel
           playerId="B"
+          hidePrivateCards
+          showResolutionDetails={false}
           cards={gameState.playerB}
           exchange={exchangeState.B}
           phase={phase}
           result={resolution?.playerB}
           boostBadges={boostBadges}
+          npcExchange={npcExchange}
+          activeExchangePlayer={activeExchangePlayer}
           t={t}
+          dealingStep={dealingStep}
+          onDeal={startDealSequence}
+          onPlay={resolveRound}
           onToggleExchangeCard={toggleExchangeCard}
           onCommitExchange={commitExchange}
         />
@@ -603,7 +777,7 @@ export default function App() {
         <section className="community-strip" aria-label={t.table.communityCards}>
           <div className="section-heading">
             <span>{t.table.community}</span>
-            <span className="deck-count">{gameState.deck.length}</span>
+            {resolution ? <span className="winner-pill">{formatWinnerText(resolution, t)}</span> : null}
           </div>
           <div className="card-grid community-grid">
             {Array.from({ length: COMMUNITY_CARD_COUNT }, (_, index) => {
@@ -621,24 +795,51 @@ export default function App() {
               );
             })}
           </div>
+          {resolution ? (
+            <ResultBanner resolution={resolution} t={t} />
+          ) : (
+            <DecisionBanner
+              phase={phase}
+              dealingStep={dealingStep}
+              userExchange={exchangeState.A}
+              npcExchange={npcExchange}
+              activeExchangePlayer={activeExchangePlayer}
+              t={t}
+            />
+          )}
         </section>
 
         <PlayerPanel
           playerId="A"
+          showResolutionDetails={false}
           cards={gameState.playerA}
           exchange={exchangeState.A}
           phase={phase}
           result={resolution?.playerA}
           boostBadges={boostBadges}
+          activeExchangePlayer={activeExchangePlayer}
           t={t}
+          dealingStep={dealingStep}
+          onDeal={startDealSequence}
+          onPlay={resolveRound}
           onToggleExchangeCard={toggleExchangeCard}
           onCommitExchange={commitExchange}
         />
       </section>
-
-      <SymbolGuide t={t} />
+      {resolution ? (
+        <GameReportOverlay resolution={resolution} t={t} onNewGame={startDealSequence} />
+      ) : null}
     </main>
   );
+}
+
+function clearNpcExchangeTimer(timerRef: { current: number | undefined }) {
+  if (timerRef.current === undefined) {
+    return;
+  }
+
+  window.clearTimeout(timerRef.current);
+  timerRef.current = undefined;
 }
 
 function DeckStatus({
@@ -669,89 +870,425 @@ function DeckStatus({
   );
 }
 
+interface GameControlsProps {
+  phase: Phase;
+  dealingStep: number;
+  t: Translation;
+  onDeal: () => void;
+  onPlay: () => void;
+}
+
+function GameControls({ phase, dealingStep, t, onDeal, onPlay }: GameControlsProps) {
+  const isPlayReady = phase === "ready";
+  const isDealAction = phase === "deal" || phase === "resolved";
+  const ButtonIcon = isPlayReady ? Play : isDealAction ? Shuffle : RefreshCw;
+  const label = isPlayReady ? t.actions.play : formatDealButtonLabel(phase, t);
+  const hint = getGameControlHint(phase, dealingStep, t);
+  const disabled = phase === "dealing" || phase === "exchange";
+  const onClick = isPlayReady ? onPlay : onDeal;
+
+  return (
+    <section className="game-control-panel" aria-label={t.control.label}>
+      <p>{hint}</p>
+      <button
+        className={`control-button ${isPlayReady ? "primary" : ""}`}
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+      >
+        <ButtonIcon aria-hidden="true" />
+        <span>{label}</span>
+      </button>
+    </section>
+  );
+}
+
+interface DecisionBannerProps {
+  phase: Phase;
+  dealingStep: number;
+  userExchange: ExchangeState;
+  npcExchange: NpcExchangeState;
+  activeExchangePlayer?: PlayerId;
+  t: Translation;
+}
+
+function DecisionBanner({
+  phase,
+  dealingStep,
+  userExchange,
+  npcExchange,
+  activeExchangePlayer,
+  t,
+}: DecisionBannerProps) {
+  const content = getDecisionBannerContent(
+    phase,
+    dealingStep,
+    userExchange,
+    npcExchange,
+    activeExchangePlayer,
+    t,
+  );
+  const Icon = content.icon;
+
+  return (
+    <div className={`decision-banner ${content.tone}`} role="status" aria-live="polite">
+      <Icon aria-hidden="true" />
+      <div>
+        <strong>{content.title}</strong>
+        <span>{content.text}</span>
+      </div>
+    </div>
+  );
+}
+
+function getDecisionBannerContent(
+  phase: Phase,
+  dealingStep: number,
+  userExchange: ExchangeState,
+  npcExchange: NpcExchangeState,
+  activeExchangePlayer: PlayerId | undefined,
+  t: Translation,
+): {
+  icon: LucideIcon;
+  text: string;
+  title: string;
+  tone: "deal" | "you" | "npc" | "ready";
+} {
+  if (phase === "dealing") {
+    return {
+      icon: RefreshCw,
+      text: t.decision.dealingText(dealingStep, DEAL_SEQUENCE.length),
+      title: t.decision.dealingTitle,
+      tone: "deal",
+    };
+  }
+
+  if (phase === "exchange" && activeExchangePlayer === "B") {
+    return {
+      icon: ArrowRightLeft,
+      text: t.decision.npcTurnText,
+      title: t.decision.npcTurnTitle,
+      tone: "npc",
+    };
+  }
+
+  if (phase === "exchange" && activeExchangePlayer === "A") {
+    return {
+      icon: Hand,
+      text: userExchange.committed ? t.exchange.done : t.decision.yourTurnText,
+      title: t.decision.yourTurnTitle,
+      tone: "you",
+    };
+  }
+
+  if (phase === "ready") {
+    return {
+      icon: Play,
+      text: npcExchange.status === "done" ? t.decision.npcAction(npcExchange.changedCount) : t.decision.readyText,
+      title: t.decision.readyTitle,
+      tone: "ready",
+    };
+  }
+
+  return {
+    icon: Shuffle,
+    text: t.decision.dealText,
+    title: t.decision.dealTitle,
+    tone: "deal",
+  };
+}
+
 interface PlayerPanelProps {
   playerId: PlayerId;
+  hidePrivateCards?: boolean;
+  showResolutionDetails: boolean;
   cards: Card[];
   exchange: ExchangeState;
   phase: Phase;
   result?: ScoringResult;
   boostBadges: ReadonlyMap<string, BoostBadge>;
+  npcExchange?: NpcExchangeState;
+  activeExchangePlayer?: PlayerId;
   t: Translation;
+  dealingStep: number;
+  onDeal: () => void;
+  onPlay: () => void;
   onToggleExchangeCard: (playerId: PlayerId, cardIndex: number) => void;
   onCommitExchange: (playerId: PlayerId) => void;
 }
 
 function PlayerPanel({
   playerId,
+  hidePrivateCards = false,
+  showResolutionDetails,
   cards,
   exchange,
   phase,
   result,
   boostBadges,
+  npcExchange,
+  activeExchangePlayer,
   t,
+  dealingStep,
+  onDeal,
+  onPlay,
   onToggleExchangeCard,
   onCommitExchange,
 }: PlayerPanelProps) {
-  const canSelectCards = phase === "exchange" && !exchange.committed;
+  const canSelectCards = phase === "exchange" && activeExchangePlayer === playerId && !exchange.committed;
   const selectedCount = exchange.selectedIndexes.length;
+  const playerLabel = t.table.player(playerId);
+  const npcPanelPhase = formatNpcPanelPhase(phase, t, npcExchange ?? INITIAL_NPC_EXCHANGE);
+  const userPanelPhase =
+    playerId === "A" && phase === "exchange" && activeExchangePlayer === "A"
+      ? t.decision.yourTurnTitle
+      : formatPanelPhase(phase, t);
+  const activeDecision =
+    (playerId === "A" && phase === "exchange" && activeExchangePlayer === "A") ||
+    (hidePrivateCards && phase === "exchange" && activeExchangePlayer === "B");
 
   return (
-    <section className={`player-panel seat-${playerId.toLowerCase()}`} aria-label={t.table.player(playerId)}>
+    <section
+      className={`player-panel seat-${playerId.toLowerCase()} ${hidePrivateCards ? "npc-panel" : "user-panel"} ${
+        hidePrivateCards ? `npc-${npcExchange?.status ?? "idle"}` : ""
+      } ${activeDecision ? "active-decision" : ""}`}
+      aria-label={playerLabel}
+    >
       <div className="section-heading">
-        <span>{t.table.player(playerId)}</span>
-        {result ? <ResultChip result={result} /> : <span className="phase-chip">{formatPanelPhase(phase, t)}</span>}
+        <span>{playerLabel}</span>
+        {result ? (
+          <ResultChip result={result} />
+        ) : (
+          <span className="phase-chip">
+            {hidePrivateCards ? npcPanelPhase : userPanelPhase}
+          </span>
+        )}
       </div>
 
       <div className="card-grid private-grid">
-        {Array.from({ length: PRIVATE_CARD_COUNT }, (_, index) => (
-          <CardSlot
-            key={cards[index]?.id ?? `${playerId}-${index}`}
-            card={cards[index]}
-            boost={cards[index] ? boostBadges.get(cards[index].id) : undefined}
-            selectable={Boolean(cards[index]) && canSelectCards}
-            selected={exchange.selectedIndexes.includes(index)}
-            slotLabel={t.table.hand(index + 1)}
-            t={t}
-            onClick={() => onToggleExchangeCard(playerId, index)}
-          />
-        ))}
+        {Array.from({ length: PRIVATE_CARD_COUNT }, (_, index) =>
+          hidePrivateCards ? (
+            <HiddenCardSlot
+              key={cards[index]?.id ?? `${playerId}-${index}`}
+              filled={Boolean(cards[index])}
+              slotLabel={t.table.hiddenCard(index + 1)}
+              t={t}
+            />
+          ) : (
+            <CardSlot
+              key={cards[index]?.id ?? `${playerId}-${index}`}
+              card={cards[index]}
+              boost={cards[index] ? boostBadges.get(cards[index].id) : undefined}
+              selectable={Boolean(cards[index]) && canSelectCards}
+              selected={exchange.selectedIndexes.includes(index)}
+              slotLabel={t.table.hand(index + 1)}
+              t={t}
+              onClick={() => onToggleExchangeCard(playerId, index)}
+            />
+          ),
+        )}
       </div>
+      {hidePrivateCards ? <NpcActionCue phase={phase} npcExchange={npcExchange} t={t} /> : null}
 
-      <div className="exchange-controls" aria-label={t.table.exchangeOptions(playerId)}>
-        {phase === "exchange" && !exchange.committed ? (
-          <div className="exchange-prompt">
-            <span>{t.exchange.tapCards}</span>
-            <strong>{t.exchange.selected(selectedCount)}</strong>
-          </div>
-        ) : null}
-        {phase === "exchange" && !exchange.committed ? (
-          <button
-            type="button"
-            className={selectedCount > 0 ? "exchange-action primary" : "exchange-action"}
-            onClick={() => onCommitExchange(playerId)}
-          >
-            {selectedCount > 0 ? (
-              <>
-                <ArrowRightLeft aria-hidden="true" />
-                <span>{selectedCount === 1 ? t.exchange.changeOne : t.exchange.changeTwo}</span>
-              </>
-            ) : (
-              <span>{t.exchange.keep}</span>
-            )}
-          </button>
-        ) : null}
-        {exchange.committed ? (
-          <span className="exchange-done">{t.exchange.done}</span>
-        ) : null}
-      </div>
+      {hidePrivateCards ? (
+        <div className="exchange-controls" aria-label={t.table.exchangeOptions(playerId)}>
+          <span className="exchange-done">{npcPanelPhase}</span>
+        </div>
+      ) : (
+        <PlayerActionArea
+          phase={phase}
+          dealingStep={dealingStep}
+          selectedCount={selectedCount}
+          exchangeCommitted={exchange.committed}
+          canExchangeNow={activeExchangePlayer === "A"}
+          waitingText={activeExchangePlayer === "B" ? t.decision.npcTurnTitle : t.exchange.done}
+          t={t}
+          onDeal={onDeal}
+          onPlay={onPlay}
+          onCommitExchange={() => onCommitExchange(playerId)}
+        />
+      )}
 
-      {result ? (
+      {result && showResolutionDetails ? (
         <>
           <AttemptTrack result={result} t={t} />
           <ResolutionNote result={result} t={t} />
         </>
       ) : null}
     </section>
+  );
+}
+
+function NpcActionCue({
+  phase,
+  npcExchange,
+  t,
+}: {
+  phase: Phase;
+  npcExchange: NpcExchangeState | undefined;
+  t: Translation;
+}) {
+  if (!npcExchange || phase === "deal" || phase === "dealing" || phase === "resolved") {
+    return null;
+  }
+
+  if (phase === "exchange" && npcExchange.status === "thinking") {
+    return (
+      <div className="npc-action-cue thinking" aria-live="polite">
+        <ArrowRightLeft aria-hidden="true" />
+        <span>{t.decision.npcTurnTitle}</span>
+      </div>
+    );
+  }
+
+  if (npcExchange.status === "done") {
+    return (
+      <div className="npc-action-cue done" aria-live="polite">
+        <ArrowRightLeft aria-hidden="true" />
+        <span>{t.decision.npcAction(npcExchange.changedCount)}</span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+interface PlayerActionAreaProps {
+  phase: Phase;
+  dealingStep: number;
+  selectedCount: number;
+  exchangeCommitted: boolean;
+  canExchangeNow: boolean;
+  waitingText: string;
+  t: Translation;
+  onDeal: () => void;
+  onPlay: () => void;
+  onCommitExchange: () => void;
+}
+
+function PlayerActionArea({
+  phase,
+  dealingStep,
+  selectedCount,
+  exchangeCommitted,
+  canExchangeNow,
+  waitingText,
+  t,
+  onDeal,
+  onPlay,
+  onCommitExchange,
+}: PlayerActionAreaProps) {
+  if (phase === "deal") {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <button className="control-button primary" type="button" onClick={onDeal}>
+          <Shuffle aria-hidden="true" />
+          <span>{t.actions.deal}</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "dealing") {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <span className="exchange-done">{t.status.dealing(dealingStep, DEAL_SEQUENCE.length)}</span>
+      </div>
+    );
+  }
+
+  if (phase === "exchange" && exchangeCommitted) {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <span className="exchange-done">{t.exchange.done}</span>
+      </div>
+    );
+  }
+
+  if (phase === "exchange" && !canExchangeNow) {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <span className="exchange-done turn-waiting">{waitingText}</span>
+      </div>
+    );
+  }
+
+  if (phase === "exchange") {
+    return (
+      <div className="exchange-controls" aria-label={t.control.label}>
+        <div className="exchange-prompt">
+          <small>{t.decision.yourTurnTitle}</small>
+          <span>{t.exchange.tapCards}</span>
+          <strong>{t.exchange.selected(selectedCount)}</strong>
+        </div>
+        <button
+          type="button"
+          className={selectedCount > 0 ? "exchange-action primary" : "exchange-action"}
+          onClick={onCommitExchange}
+        >
+          {selectedCount > 0 ? (
+            <>
+              <ArrowRightLeft aria-hidden="true" />
+              <span>{selectedCount === 1 ? t.exchange.changeOne : t.exchange.changeTwo}</span>
+            </>
+          ) : (
+            <span>{t.exchange.keep}</span>
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "ready") {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <button className="control-button primary" type="button" onClick={onPlay}>
+          <Play aria-hidden="true" />
+          <span>{t.actions.play}</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "resolved") {
+    return (
+      <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+        <button className="control-button" type="button" onClick={onDeal}>
+          <Shuffle aria-hidden="true" />
+          <span>{t.actions.newGame}</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="exchange-controls primary-controls" aria-label={t.control.label}>
+      <span className="exchange-done">{t.exchange.done}</span>
+    </div>
+  );
+}
+
+interface HiddenCardSlotProps {
+  filled: boolean;
+  slotLabel: string;
+  t: Translation;
+}
+
+function HiddenCardSlot({ filled, slotLabel, t }: HiddenCardSlotProps) {
+  return (
+    <div className={`card-slot hidden-slot ${filled ? "filled" : "empty"}`}>
+      {filled ? (
+        <div className="card-back" aria-label={slotLabel}>
+          <span className="card-back-mark" aria-hidden="true" />
+        </div>
+      ) : (
+        <div className="card-placeholder" aria-label={t.table.emptySlot(slotLabel)}>
+          <span>{slotLabel}</span>
+        </div>
+      )}
+      <span className="card-name">{slotLabel}</span>
+      <span className="card-role role-text-defense">{t.table.npcResolved}</span>
+    </div>
   );
 }
 
@@ -878,13 +1415,171 @@ function Scoreboard({ resolution, t }: { resolution: GameResolution; t: Translat
 
   return (
     <div className="scoreboard">
-      <ScoreCell playerId="A" result={resolution.playerA} />
+      <ScoreCell playerId="A" result={resolution.playerA} t={t} />
       <div className="winner-cell">
         <Trophy aria-hidden="true" />
         <span>{winnerText}</span>
       </div>
-      <ScoreCell playerId="B" result={resolution.playerB} />
+      <ScoreCell playerId="B" result={resolution.playerB} t={t} />
     </div>
+  );
+}
+
+function ResultBanner({ resolution, t }: { resolution: GameResolution; t: Translation }) {
+  const winnerClass =
+    resolution.winner === "draw" ? "draw" : resolution.winner === "A" ? "you-win" : "npc-win";
+
+  return (
+    <div className={`result-banner ${winnerClass}`} role="status" aria-live="polite">
+      <Trophy aria-hidden="true" />
+      <div>
+        <strong>{formatWinnerText(resolution, t)}</strong>
+        <span>
+          {t.score.player("A")} {resolution.playerA.score} - {t.score.player("B")}{" "}
+          {resolution.playerB.score}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function GameReportOverlay({
+  resolution,
+  t,
+  onNewGame,
+}: {
+  resolution: GameResolution;
+  t: Translation;
+  onNewGame: () => void;
+}) {
+  const winnerClass =
+    resolution.winner === "draw" ? "draw" : resolution.winner === "A" ? "you-win" : "npc-win";
+  const winnerText = formatReportWinnerText(resolution, t);
+  const reasonText = formatWinnerReason(resolution, t);
+
+  return (
+    <section className={`game-report ${winnerClass}`} role="dialog" aria-live="polite" aria-label={t.report.title}>
+      {resolution.winner !== "draw" ? <VictoryConfetti /> : null}
+      <div className="game-report-hero">
+        <span>{t.report.title}</span>
+        <strong>{winnerText}</strong>
+        <div className="report-score-line">
+          <b>{resolution.playerA.score}</b>
+          <small>{t.score.player("A")}</small>
+          <em aria-hidden="true">-</em>
+          <b>{resolution.playerB.score}</b>
+          <small>{t.score.player("B")}</small>
+        </div>
+        <p>{reasonText}</p>
+      </div>
+
+      <div className="report-details" aria-label={t.report.playDetails}>
+        <ReportPlayer playerId="A" result={resolution.playerA} t={t} />
+        <ReportPlayer playerId="B" result={resolution.playerB} t={t} />
+      </div>
+
+      <button className="control-button report-new-game" type="button" onClick={onNewGame}>
+        <Shuffle aria-hidden="true" />
+        <span>{t.report.newGame}</span>
+      </button>
+    </section>
+  );
+}
+
+function VictoryConfetti() {
+  return (
+    <div className="victory-confetti" aria-hidden="true">
+      {VERTICAL_CONFETTI_PIECES.map((piece) => (
+        <span
+          className={`confetti-piece confetti-vertical piece-${piece % CONFETTI_VARIANT_COUNT}`}
+          key={piece}
+          style={{
+            animationDelay: `${(piece % 11) * 72}ms`,
+            animationDuration: `${2100 + (piece % 7) * 180}ms`,
+            left: `${4 + ((piece * 23) % 92)}%`,
+            top: `${-18 - (piece % 5) * 5}%`,
+            "--confetti-drift-x": `${-32 + (piece % 9) * 8}px`,
+            "--confetti-fall-y": `${108 + (piece % 4) * 8}vh`,
+            "--confetti-rotation": `${460 + (piece % 6) * 70}deg`,
+            "--confetti-scale": `${0.72 + (piece % 5) * 0.12}`,
+          } as CSSProperties}
+        />
+      ))}
+      {SIDE_CONFETTI_PIECES.map((piece) => {
+        const fromLeft = piece % 2 === 0;
+
+        return (
+          <span
+            className={`confetti-piece confetti-side ${fromLeft ? "from-left" : "from-right"} piece-${
+              piece % CONFETTI_VARIANT_COUNT
+            }`}
+            key={`side-${piece}`}
+            style={{
+              animationDelay: `${(piece % 14) * 92}ms`,
+              animationDuration: `${1850 + (piece % 8) * 160}ms`,
+              [fromLeft ? "left" : "right"]: `${-9 - (piece % 4) * 3}%`,
+              top: `${8 + ((piece * 19) % 78)}%`,
+              "--confetti-drift-x": `${fromLeft ? 106 + (piece % 6) * 9 : -106 - (piece % 6) * 9}vw`,
+              "--confetti-drift-y": `${-58 + (piece % 11) * 11}px`,
+              "--confetti-rotation": `${360 + (piece % 7) * 85}deg`,
+              "--confetti-scale": `${0.66 + (piece % 6) * 0.12}`,
+            } as CSSProperties}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function ReportPlayer({
+  playerId,
+  result,
+  t,
+}: {
+  playerId: PlayerId;
+  result: ScoringResult;
+  t: Translation;
+}) {
+  return (
+    <article className="report-player">
+      <header>
+        <span>{t.score.player(playerId)}</span>
+        <strong>{result.score}</strong>
+      </header>
+      <div className="report-player-meta">
+        <span>{t.report.outcome[result.source]}</span>
+        <span>
+          {t.report.tieNumber} #{result.shootTiebreaker}
+        </span>
+      </div>
+      <ol className="report-attempts">
+        {result.attempts.length > 0 ? (
+          result.attempts.map((attempt, index) => {
+            const Icon = KIND_ICONS[attempt.shootKind];
+
+            return (
+              <li className={`report-attempt ${attempt.outcome}`} key={`${attempt.shootCardId}-${index}`}>
+                <Icon aria-hidden="true" />
+                <div>
+                  <b>
+                    {index + 1}. {t.cards[attempt.shootKind].name}
+                  </b>
+                  <span>{formatAttemptLine(result, attempt, t)}</span>
+                </div>
+              </li>
+            );
+          })
+        ) : (
+          <li className="report-attempt none">
+            <Circle aria-hidden="true" />
+            <div>
+              <b>{t.report.outcome.none}</b>
+              <span>{t.report.noAttempts}</span>
+            </div>
+          </li>
+        )}
+      </ol>
+    </article>
   );
 }
 
@@ -896,10 +1591,34 @@ function formatWinnerText(resolution: GameResolution, t: Translation): string {
   return resolution.tiebreakerUsed ? t.score.wonByCard(resolution.winner) : t.score.player(resolution.winner);
 }
 
-function ScoreCell({ playerId, result }: { playerId: PlayerId; result: ScoringResult }) {
+function formatReportWinnerText(resolution: GameResolution, t: Translation): string {
+  if (resolution.winner === "draw") {
+    return t.score.draw;
+  }
+
+  return t.report.winner(resolution.winner);
+}
+
+function formatWinnerReason(resolution: GameResolution, t: Translation): string {
+  if (resolution.winner === "draw") {
+    return t.score.draw;
+  }
+
+  return resolution.tiebreakerUsed ? t.report.winnerReasonCard : t.report.winnerReasonScore;
+}
+
+function ScoreCell({
+  playerId,
+  result,
+  t,
+}: {
+  playerId: PlayerId;
+  result: ScoringResult;
+  t: Translation;
+}) {
   return (
     <div className="score-cell">
-      <span className="score-player">P{playerId}</span>
+      <span className="score-player">{t.score.player(playerId)}</span>
       <strong>{result.score}</strong>
       <span className="tie-number">#{result.shootTiebreaker}</span>
     </div>
@@ -1036,12 +1755,49 @@ function formatPanelPhase(phase: Phase, t: Translation): string {
   return t.phase[phase === "deal" ? "empty" : phase];
 }
 
+function getGameControlHint(phase: Phase, dealingStep: number, t: Translation): string {
+  switch (phase) {
+    case "deal":
+      return t.control.dealHint;
+    case "dealing":
+      return t.status.dealing(dealingStep, DEAL_SEQUENCE.length);
+    case "exchange":
+      return t.control.exchangeHint;
+    case "ready":
+      return t.control.readyHint;
+    case "resolved":
+      return t.control.resolvedHint;
+  }
+}
+
+function formatNpcPanelPhase(
+  phase: Phase,
+  t: Translation,
+  npcExchange: NpcExchangeState,
+): string {
+  if (phase === "resolved") {
+    return t.table.npcResolved;
+  }
+
+  if (phase === "exchange" && npcExchange.status === "thinking") {
+    return t.table.npcThinking;
+  }
+
+  if ((phase === "exchange" || phase === "ready") && npcExchange.status === "done") {
+    return t.table.npcChanged(npcExchange.changedCount);
+  }
+
+  return phase === "deal" || phase === "dealing" || phase === "exchange"
+    ? t.table.npcWaiting
+    : t.table.npcReady;
+}
+
 function formatDealButtonLabel(phase: Phase, t: Translation): string {
   if (phase === "dealing") {
     return t.actions.dealing;
   }
 
-  return phase === "deal" ? t.actions.deal : t.actions.newHand;
+  return phase === "deal" ? t.actions.deal : t.actions.newGame;
 }
 
 function formatPhaseStatus(phase: Phase, dealingStep: number, t: Translation): string {
@@ -1057,6 +1813,27 @@ function formatPhaseStatus(phase: Phase, dealingStep: number, t: Translation): s
     case "resolved":
       return t.phase.resolved;
   }
+}
+
+function createRandomExchangeOrder(): ExchangeOrder {
+  return Math.random() < 0.5 ? ["A", "B"] : ["B", "A"];
+}
+
+function getActiveExchangePlayer(
+  phase: Phase,
+  exchangeOrder: ExchangeOrder,
+  exchangeState: Record<PlayerId, ExchangeState>,
+  npcExchange: NpcExchangeState,
+): PlayerId | undefined {
+  if (phase !== "exchange") {
+    return undefined;
+  }
+
+  if (npcExchange.status === "thinking") {
+    return "B";
+  }
+
+  return exchangeOrder.find((playerId) => !exchangeState[playerId].committed);
 }
 
 function buildBoostBadgeMap(resolution: GameResolution | undefined): ReadonlyMap<string, BoostBadge> {
@@ -1085,6 +1862,63 @@ function buildBoostBadgeMap(resolution: GameResolution | undefined): ReadonlyMap
   }
 
   return boostBadges;
+}
+
+function chooseNpcExchangeIndexes(
+  privateCards: readonly Card[],
+  communityCards: readonly Card[],
+): number[] {
+  const availableCards = [...privateCards, ...communityCards];
+  const context = {
+    hasCounterDefense: availableCards.some((card) => COUNTER_DEFENSE_KINDS.has(card.kind)),
+    hasFoul: availableCards.some((card) => card.kind === "foul"),
+    hasFreeThrow: availableCards.some((card) => card.kind === "freeThrow"),
+    hasPrimaryShoot: availableCards.some((card) => PRIMARY_SHOOT_KINDS.has(card.kind)),
+  };
+
+  return privateCards
+    .map((card, index) => ({
+      index,
+      score: getNpcPrivateCardKeepScore(card, context),
+    }))
+    .filter((candidate) => candidate.score <= NPC_EXCHANGE_SCORE_THRESHOLD)
+    .sort((left, right) => left.score - right.score)
+    .slice(0, PRIVATE_CARD_COUNT)
+    .map((candidate) => candidate.index);
+}
+
+function getNpcPrivateCardKeepScore(
+  card: Card,
+  context: {
+    hasCounterDefense: boolean;
+    hasFoul: boolean;
+    hasFreeThrow: boolean;
+    hasPrimaryShoot: boolean;
+  },
+): number {
+  switch (card.kind) {
+    case "deepThree":
+      return 6;
+    case "threePoint":
+      return 5;
+    case "dunk":
+    case "layup":
+    case "rimProtect":
+    case "foul":
+      return 4;
+    case "faceGuard":
+      return 3;
+    case "andOne":
+      return context.hasPrimaryShoot && context.hasFreeThrow ? 4 : 2;
+    case "clutch":
+      return context.hasPrimaryShoot ? 3 : 1;
+    case "help":
+      return context.hasCounterDefense ? 3 : 1;
+    case "freeThrow":
+      return context.hasFoul || context.hasFreeThrow ? 2 : 1;
+    case "noFoul":
+      return 2;
+  }
 }
 
 function addBoostBadge(boostBadges: Map<string, BoostBadge>, cardId: string, nextBadge: BoostBadge) {
