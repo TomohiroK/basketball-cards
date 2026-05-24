@@ -224,6 +224,8 @@ h1 {
 
 .winner-cell {
   color: var(--success);
+  line-height: 1.05;
+  text-align: center;
   text-transform: uppercase;
 }
 
