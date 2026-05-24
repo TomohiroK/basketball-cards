@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDeck, dealGame, DECK_SIZE } from "./deck";
 import { getAvailableCards, resolveGame, resolveScoring } from "./engine";
+import { getPublicInvalidDuplicateCardIds } from "./publicDuplicates";
 import type { Card, CardKind, GameState } from "./types";
 
 const deck = createDeck();
@@ -104,7 +105,83 @@ describe("basketball poker engine", () => {
     const result = resolveScoring(attacker, defender);
 
     expect(result.score).toBe(0);
-    expect(result.helpTarget).toBe("faceGuard");
+    expect(result.attempts[0]).toMatchObject({
+      defenseValue: 4,
+      outcome: "stopped",
+    });
+  });
+
+  it("forces the highest Clutch and Help copies into matching values", () => {
+    const attacker = [
+      getCard("dunk", 8),
+      getCard("clutch", 1),
+      getCard("clutch", 3),
+    ];
+    const defender = [getCard("rimProtect", 8), getCard("help", 3)];
+
+    const result = resolveScoring(attacker, defender);
+
+    expect(result.score).toBe(0);
+    expect(result.attempts[0]).toMatchObject({
+      offenseValue: 11,
+      defenseValue: 11,
+      outcome: "stopped",
+    });
+  });
+
+  it("applies the highest Clutch and Help to each matching attempt", () => {
+    const attacker = [getCard("rimProtect", 3), getCard("foul")];
+    const defender = [getCard("faceGuard", 1), getCard("rimProtect", 2)];
+    const community = [
+      getCard("layup", 4),
+      getCard("threePoint", 1),
+      getCard("help", 4),
+      getCard("clutch", 2),
+    ];
+
+    const result = resolveScoring([...attacker, ...community], [...defender, ...community]);
+
+    expect(result.score).toBe(0);
+    expect(result.attempts).toEqual([
+      expect.objectContaining({
+        shootKind: "threePoint",
+        offenseValue: 3,
+        offenseModifierValue: 2,
+        defenseKind: "faceGuard",
+        defenseValue: 5,
+        defenseModifierValue: 4,
+        outcome: "stopped",
+      }),
+      expect.objectContaining({
+        shootKind: "layup",
+        offenseValue: 6,
+        offenseModifierValue: 2,
+        defenseKind: "rimProtect",
+        defenseValue: 6,
+        defenseModifierValue: 4,
+        outcome: "stopped",
+      }),
+    ]);
+  });
+
+  it("marks only lower public numbered duplicates as invalid", () => {
+    const invalidCardIds = getPublicInvalidDuplicateCardIds([
+      getCard("clutch", 1),
+      getCard("clutch", 3),
+      getCard("rimProtect", 5),
+      getCard("rimProtect", 8),
+    ]);
+
+    expect(invalidCardIds).toEqual(new Set(["clutch-1", "rimProtect-5"]));
+  });
+
+  it("does not reveal private duplicates through public invalid markers", () => {
+    const invalidCardIds = getPublicInvalidDuplicateCardIds([
+      getCard("rimProtect", 5),
+      ...getCards("freeThrow", 2),
+    ]);
+
+    expect(invalidCardIds.size).toBe(0);
   });
 });
 

@@ -52,7 +52,10 @@ export interface AttemptResult {
   shootCardId: string;
   scoreValue: PointValue;
   offenseValue: number;
+  offenseModifierValue?: number;
+  defenseCardId?: string;
   defenseValue?: number;
+  defenseModifierValue?: number;
   defenseKind?: DefenseKind;
   outcome: "score" | "stopped" | "foul" | "andOne";
 }
@@ -80,4 +83,3 @@ export interface ExchangePlan {
   playerA: number[];
   playerB: number[];
 }
-

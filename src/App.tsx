@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   ArrowRightLeft,
   BadgePlus,
-  Check,
   Circle,
   CircleDot,
   CircleDotDashed,
@@ -10,6 +9,7 @@ import {
   Flame,
   Hand,
   OctagonX,
+  Play,
   Plus,
   RefreshCw,
   Shield,
@@ -26,6 +26,7 @@ import {
   PRIVATE_CARD_COUNT,
 } from "./game/deck";
 import { resolveGame } from "./game/engine";
+import { getPublicInvalidDuplicateCardIds } from "./game/publicDuplicates";
 import type {
   Card,
   CardKind,
@@ -47,6 +48,11 @@ interface CardVisual {
 interface ExchangeState {
   selectedIndexes: number[];
   committed: boolean;
+}
+
+interface BoostBadge {
+  kind: "clutch" | "help";
+  value: number;
 }
 
 const PLAYER_KEYS = {
@@ -116,6 +122,11 @@ export default function App() {
   const resolution = useMemo(
     () => (phase === "resolved" ? resolveGame(gameState) : undefined),
     [gameState, phase],
+  );
+  const boostBadges = useMemo(() => buildBoostBadgeMap(resolution), [resolution]);
+  const invalidCommunityCardIds = useMemo(
+    () => getPublicInvalidDuplicateCardIds(gameState.community),
+    [gameState.community],
   );
   const dealtCount =
     gameState.playerA.length + gameState.playerB.length + gameState.community.length + gameState.discards.length;
@@ -265,10 +276,10 @@ export default function App() {
             type="button"
             onClick={resolveRound}
             disabled={phase !== "ready"}
-            title="Resolve"
+            title="Play"
           >
-            <Check aria-hidden="true" />
-            <span>Resolve</span>
+            <Play aria-hidden="true" />
+            <span>Play</span>
           </button>
         </div>
       </section>
@@ -290,6 +301,7 @@ export default function App() {
           exchange={exchangeState.B}
           phase={phase}
           result={resolution?.playerB}
+          boostBadges={boostBadges}
           onToggleExchangeCard={toggleExchangeCard}
           onCommitExchange={commitExchange}
         />
@@ -300,13 +312,19 @@ export default function App() {
             <span className="deck-count">{gameState.deck.length}</span>
           </div>
           <div className="card-grid community-grid">
-            {Array.from({ length: COMMUNITY_CARD_COUNT }, (_, index) => (
-              <CardSlot
-                key={gameState.community[index]?.id ?? `community-${index}`}
-                card={gameState.community[index]}
-                slotLabel={`Board ${index + 1}`}
-              />
-            ))}
+            {Array.from({ length: COMMUNITY_CARD_COUNT }, (_, index) => {
+              const card = gameState.community[index];
+
+              return (
+                <CardSlot
+                  key={card?.id ?? `community-${index}`}
+                  card={card}
+                  invalid={card ? invalidCommunityCardIds.has(card.id) : false}
+                  boost={card ? boostBadges.get(card.id) : undefined}
+                  slotLabel={`Board ${index + 1}`}
+                />
+              );
+            })}
           </div>
         </section>
 
@@ -316,6 +334,7 @@ export default function App() {
           exchange={exchangeState.A}
           phase={phase}
           result={resolution?.playerA}
+          boostBadges={boostBadges}
           onToggleExchangeCard={toggleExchangeCard}
           onCommitExchange={commitExchange}
         />
@@ -352,6 +371,7 @@ interface PlayerPanelProps {
   exchange: ExchangeState;
   phase: Phase;
   result?: ScoringResult;
+  boostBadges: ReadonlyMap<string, BoostBadge>;
   onToggleExchangeCard: (playerId: PlayerId, cardIndex: number) => void;
   onCommitExchange: (playerId: PlayerId) => void;
 }
@@ -362,6 +382,7 @@ function PlayerPanel({
   exchange,
   phase,
   result,
+  boostBadges,
   onToggleExchangeCard,
   onCommitExchange,
 }: PlayerPanelProps) {
@@ -380,6 +401,7 @@ function PlayerPanel({
           <CardSlot
             key={cards[index]?.id ?? `${playerId}-${index}`}
             card={cards[index]}
+            boost={cards[index] ? boostBadges.get(cards[index].id) : undefined}
             selectable={Boolean(cards[index]) && canSelectCards}
             selected={exchange.selectedIndexes.includes(index)}
             slotLabel={`Hand ${index + 1}`}
@@ -428,17 +450,34 @@ function PlayerPanel({
 
 interface CardSlotProps {
   card?: Card;
+  invalid?: boolean;
+  boost?: BoostBadge;
   selectable?: boolean;
   selected?: boolean;
   slotLabel: string;
   onClick?: () => void;
 }
 
-function CardSlot({ card, selectable = false, selected = false, slotLabel, onClick }: CardSlotProps) {
+function CardSlot({
+  card,
+  invalid = false,
+  boost,
+  selectable = false,
+  selected = false,
+  slotLabel,
+  onClick,
+}: CardSlotProps) {
   return (
-    <div className={card ? "card-slot filled" : "card-slot empty"}>
+    <div className={`card-slot ${card ? "filled" : "empty"} ${invalid ? "invalid" : ""}`}>
       {card ? (
-        <CardFace card={card} selectable={selectable} selected={selected} onClick={onClick} />
+        <CardFace
+          card={card}
+          invalid={invalid}
+          boost={boost}
+          selectable={selectable}
+          selected={selected}
+          onClick={onClick}
+        />
       ) : (
         <div className="card-placeholder" aria-label={`${slotLabel} empty`}>
           <span>{slotLabel}</span>
@@ -452,12 +491,21 @@ function CardSlot({ card, selectable = false, selected = false, slotLabel, onCli
 
 interface CardFaceProps {
   card: Card;
+  invalid?: boolean;
+  boost?: BoostBadge;
   selectable?: boolean;
   selected?: boolean;
   onClick?: () => void;
 }
 
-function CardFace({ card, selectable = false, selected = false, onClick }: CardFaceProps) {
+function CardFace({
+  card,
+  invalid = false,
+  boost,
+  selectable = false,
+  selected = false,
+  onClick,
+}: CardFaceProps) {
   const Icon = KIND_ICONS[card.kind];
   const pointMarkers = Array.from({ length: card.points ?? 0 }, (_, index) => index);
   const cornerValue = card.number ?? card.points ?? (card.kind === "andOne" ? 1 : undefined);
@@ -465,11 +513,23 @@ function CardFace({ card, selectable = false, selected = false, onClick }: CardF
   return (
     <button
       type="button"
-      className={`card-face role-${card.role} kind-${card.kind} ${selected ? "selected" : ""}`}
-      aria-label={formatCardAria(card)}
+      className={`card-face role-${card.role} kind-${card.kind} ${selected ? "selected" : ""} ${
+        invalid ? "invalid" : ""
+      }`}
+      aria-label={`${formatCardAria(card)}${invalid ? ", invalid public duplicate" : ""}`}
       disabled={!selectable}
       onClick={onClick}
     >
+      {boost && !invalid ? (
+        <span className={`boost-badge ${boost.kind}`} aria-hidden="true">
+          +{boost.value}
+        </span>
+      ) : null}
+      {invalid ? (
+        <span className="invalid-overlay" aria-hidden="true">
+          無効
+        </span>
+      ) : null}
       <span className="role-rail" aria-hidden="true" />
       <span className="corner-number" aria-hidden="true">
         {cornerValue}
@@ -655,9 +715,45 @@ function formatPhaseStatus(phase: Phase, dealingStep: number): string {
     case "exchange":
       return "Exchange phase";
     case "ready":
-      return "Ready to resolve";
+      return "Ready to play";
     case "resolved":
-      return "Resolved";
+      return "Played";
+  }
+}
+
+function buildBoostBadgeMap(resolution: GameResolution | undefined): ReadonlyMap<string, BoostBadge> {
+  const boostBadges = new Map<string, BoostBadge>();
+
+  if (!resolution) {
+    return boostBadges;
+  }
+
+  for (const result of [resolution.playerA, resolution.playerB]) {
+    for (const attempt of result.attempts) {
+      if (attempt.offenseModifierValue) {
+        addBoostBadge(boostBadges, attempt.shootCardId, {
+          kind: "clutch",
+          value: attempt.offenseModifierValue,
+        });
+      }
+
+      if (attempt.defenseCardId && attempt.defenseModifierValue) {
+        addBoostBadge(boostBadges, attempt.defenseCardId, {
+          kind: "help",
+          value: attempt.defenseModifierValue,
+        });
+      }
+    }
+  }
+
+  return boostBadges;
+}
+
+function addBoostBadge(boostBadges: Map<string, BoostBadge>, cardId: string, nextBadge: BoostBadge) {
+  const currentBadge = boostBadges.get(cardId);
+
+  if (!currentBadge || nextBadge.value > currentBadge.value) {
+    boostBadges.set(cardId, nextBadge);
   }
 }
 

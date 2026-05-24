@@ -27,7 +27,8 @@ This keeps the current build simple while preserving the important mobile escape
 - Foul is forced when it exists in the countering player's private cards or in the shared community cards.
 - And 1 preserves the made shoot and adds exactly one bonus Free Throw point when at least one Free Throw card exists. Extra Free Throw cards do not increase the And 1 bonus.
 - No Foul cancels only And 1; it does not cancel Foul conversion.
-- Clutch and Help are assigned automatically by max/min scoring:
+- Clutch and Help are mandatory when a valid target exists. Duplicate copies collapse to the highest-numbered copy.
+- If multiple targets exist, Clutch and Help are assigned automatically by max/min scoring:
   - attacker chooses the best Clutch target,
   - defender chooses the best Help target.
 - Pure Foul free throws use `0` as the shoot-number tiebreaker because the normal shoot is stopped.

@@ -36,11 +36,6 @@ interface CollapsedCards {
   noFoul?: Card;
 }
 
-interface ResolverChoice {
-  clutchTarget?: ShootKind;
-  helpTarget?: DefenseKind;
-}
-
 export function resolveGame(gameState: GameState): GameResolution {
   const playerAAvailableCards = getAvailableCards(gameState, "playerA");
   const playerBAvailableCards = getAvailableCards(gameState, "playerB");
@@ -68,29 +63,10 @@ export function getAvailableCards(
 export function resolveScoring(attackerCards: readonly Card[], defenderCards: readonly Card[]): ScoringResult {
   const attacker = collapseCards(attackerCards);
   const defender = collapseCards(defenderCards);
-  const clutchTargets = getClutchTargets(attacker);
-  const helpTargets = getHelpTargets(defender);
-
-  const attackerChoices = clutchTargets.map((clutchTarget) => {
-    const defenderOutcomes = helpTargets.map((helpTarget) =>
-      evaluateResolution(attacker, defender, { clutchTarget, helpTarget }),
-    );
-
-    return defenderOutcomes.reduce((currentWorst, outcome) =>
-      compareScores(outcome, currentWorst) < 0 ? outcome : currentWorst,
-    );
-  });
-
-  return attackerChoices.reduce((currentBest, outcome) =>
-    compareScores(outcome, currentBest) > 0 ? outcome : currentBest,
-  );
+  return evaluateResolution(attacker, defender);
 }
 
-function evaluateResolution(
-  attacker: CollapsedCards,
-  defender: CollapsedCards,
-  choice: ResolverChoice,
-): ScoringResult {
+function evaluateResolution(attacker: CollapsedCards, defender: CollapsedCards): ScoringResult {
   const spentDefenseKinds = new Set<DefenseKind>();
   const attempts: AttemptResult[] = [];
 
@@ -103,7 +79,7 @@ function evaluateResolution(
 
     const scoreValue = SHOOT_POINTS[shootKind];
     const clutchValue =
-      choice.clutchTarget === shootKind && attacker.clutch?.number ? attacker.clutch.number : 0;
+      NUMBERED_SHOOT_KINDS.includes(shootKind) && attacker.clutch?.number ? attacker.clutch.number : 0;
     const offenseValue = (shootCard.number ?? 0) + clutchValue;
 
     if (defender.foul) {
@@ -126,29 +102,30 @@ function evaluateResolution(
         shootTiebreaker: canUseAndOne ? shootCard.number ?? 0 : 0,
         source: canUseAndOne ? "andOne" : "foulFreeThrows",
         attempts,
-        clutchTarget: choice.clutchTarget,
-        helpTarget: choice.helpTarget,
-        usedCardIds: getUsedCardIds(attacker, defender, shootCard, choice, canUseAndOne),
+        clutchTarget: clutchValue > 0 ? shootKind : undefined,
+        usedCardIds: getUsedCardIds(attacker, defender, shootCard, canUseAndOne),
         summary: canUseAndOne ? "And 1" : "Foul FT",
       };
     }
 
     const defenseKind = VALID_DEFENSE[shootKind];
     const defenseCard = defenseKind ? defender.defenses[defenseKind] : undefined;
+    const helpValue = defenseKind && defenseCard && defender.help?.number ? defender.help.number : 0;
+    const defenseValue = defenseCard ? (defenseCard.number ?? 0) + helpValue : undefined;
+    const defenseIsAvailable = Boolean(defenseKind && defenseCard && !spentDefenseKinds.has(defenseKind));
 
-    if (defenseKind && defenseCard && !spentDefenseKinds.has(defenseKind)) {
-      const helpValue =
-        choice.helpTarget === defenseKind && defender.help?.number ? defender.help.number : 0;
-      const defenseValue = (defenseCard.number ?? 0) + helpValue;
-
-      if (defenseValue >= offenseValue) {
+    if (defenseIsAvailable && defenseKind && defenseCard) {
+      if ((defenseValue ?? 0) >= offenseValue) {
         spentDefenseKinds.add(defenseKind);
         attempts.push({
           shootKind,
           shootCardId: shootCard.id,
           scoreValue: scoreValue as 1 | 2 | 3,
           offenseValue,
+          offenseModifierValue: clutchValue > 0 ? clutchValue : undefined,
+          defenseCardId: defenseCard.id,
           defenseValue,
+          defenseModifierValue: helpValue > 0 ? helpValue : undefined,
           defenseKind,
           outcome: "stopped",
         });
@@ -161,8 +138,11 @@ function evaluateResolution(
       shootCardId: shootCard.id,
       scoreValue: scoreValue as 1 | 2 | 3,
       offenseValue,
-      defenseKind,
-      defenseValue: defenseCard?.number,
+      offenseModifierValue: clutchValue > 0 ? clutchValue : undefined,
+      defenseCardId: defenseIsAvailable ? defenseCard?.id : undefined,
+      defenseKind: defenseIsAvailable ? defenseKind : undefined,
+      defenseValue: defenseIsAvailable ? defenseValue : undefined,
+      defenseModifierValue: defenseIsAvailable && helpValue > 0 ? helpValue : undefined,
       outcome: "score",
     });
 
@@ -172,9 +152,9 @@ function evaluateResolution(
       shootTiebreaker: shootCard.number ?? 0,
       source: "shoot",
       attempts,
-      clutchTarget: choice.clutchTarget,
-      helpTarget: choice.helpTarget,
-      usedCardIds: getUsedCardIds(attacker, defender, shootCard, choice, false),
+      clutchTarget: clutchValue > 0 ? shootKind : undefined,
+      helpTarget: defenseIsAvailable && helpValue > 0 ? defenseKind : undefined,
+      usedCardIds: getUsedCardIds(attacker, defender, shootCard, false),
       summary: "Score",
     };
   }
@@ -184,8 +164,8 @@ function evaluateResolution(
     shootTiebreaker: 0,
     source: "none",
     attempts,
-    clutchTarget: choice.clutchTarget,
-    helpTarget: choice.helpTarget,
+    clutchTarget: undefined,
+    helpTarget: undefined,
     usedCardIds: [],
     summary: "No play",
   };
@@ -234,36 +214,15 @@ function collapseCards(cards: readonly Card[]): CollapsedCards {
   return collapsed;
 }
 
-function getClutchTargets(attacker: CollapsedCards): Array<ShootKind | undefined> {
-  if (!attacker.clutch) {
-    return [undefined];
-  }
-
-  const targets = NUMBERED_SHOOT_KINDS.filter((shootKind) => attacker.shoots[shootKind]);
-  return targets.length > 0 ? [undefined, ...targets] : [undefined];
-}
-
-function getHelpTargets(defender: CollapsedCards): Array<DefenseKind | undefined> {
-  if (!defender.help) {
-    return [undefined];
-  }
-
-  const targets = (["rimProtect", "faceGuard"] as const).filter(
-    (defenseKind) => defender.defenses[defenseKind],
-  );
-  return targets.length > 0 ? [undefined, ...targets] : [undefined];
-}
-
 function getUsedCardIds(
   attacker: CollapsedCards,
   defender: CollapsedCards,
   shootCard: Card,
-  choice: ResolverChoice,
   usedAndOne: boolean,
 ): string[] {
   const usedCardIds = [shootCard.id];
 
-  if (choice.clutchTarget === shootCard.kind && attacker.clutch) {
+  if (isNumberedShootKind(shootCard.kind) && attacker.clutch) {
     usedCardIds.push(attacker.clutch.id);
   }
 
@@ -284,6 +243,10 @@ function getUsedCardIds(
 
 function pickHighestNumberedCard(current: Card | undefined, candidate: Card): Card {
   return (candidate.number ?? 0) > (current?.number ?? 0) ? candidate : current ?? candidate;
+}
+
+function isNumberedShootKind(kind: Card["kind"]): kind is (typeof NUMBERED_SHOOT_KINDS)[number] {
+  return (NUMBERED_SHOOT_KINDS as readonly string[]).includes(kind);
 }
 
 function compareScores(left: ScoringResult, right: ScoringResult): number {
