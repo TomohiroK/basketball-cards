@@ -42,14 +42,14 @@ export function resolveGame(gameState: GameState): GameResolution {
   const playerA = resolveScoring(playerAAvailableCards, playerBAvailableCards);
   const playerB = resolveScoring(playerBAvailableCards, playerAAvailableCards);
   const scoreComparison = compareScores(playerA, playerB);
+  const shootTiebreakerComparison = compareShootTiebreakers(playerA, playerB);
   const winner = scoreComparison > 0 ? "A" : scoreComparison < 0 ? "B" : "draw";
 
   return {
     playerA,
     playerB,
     winner,
-    tiebreakerUsed:
-      playerA.score === playerB.score && playerA.shootTiebreaker !== playerB.shootTiebreaker,
+    tiebreakerUsed: playerA.score === playerB.score && shootTiebreakerComparison !== 0,
   };
 }
 
@@ -254,5 +254,16 @@ function compareScores(left: ScoringResult, right: ScoringResult): number {
     return left.score - right.score;
   }
 
-  return left.shootTiebreaker - right.shootTiebreaker;
+  return compareShootTiebreakers(left, right);
+}
+
+function compareShootTiebreakers(left: ScoringResult, right: ScoringResult): number {
+  const leftShootNumber = left.successfulShoot?.number;
+  const rightShootNumber = right.successfulShoot?.number;
+
+  if (leftShootNumber === undefined || rightShootNumber === undefined) {
+    return 0;
+  }
+
+  return leftShootNumber - rightShootNumber;
 }

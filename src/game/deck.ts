@@ -2,7 +2,7 @@ import type { Card, CardKind, CardRole, GameState, NumberedKind, PointValue } fr
 
 const FREE_THROW_COUNT = 7;
 const DEEP_THREE_COUNT = 2;
-const AND_ONE_COUNT = 7;
+const AND_ONE_COUNT = 6;
 const FOUL_COUNT = 2;
 const NO_FOUL_COUNT = 1;
 
@@ -31,7 +31,7 @@ const CARD_META: Record<CardKind, { label: string; role: CardRole; points?: Poin
   noFoul: { label: "No Foul", role: "defense" },
 };
 
-export const DECK_SIZE = 52;
+export const DECK_SIZE = 51;
 export const PRIVATE_CARD_COUNT = 2;
 export const COMMUNITY_CARD_COUNT = 4;
 

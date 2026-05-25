@@ -27,7 +27,7 @@ import {
   PRIVATE_CARD_COUNT,
 } from "./game/deck";
 import { resolveGame } from "./game/engine";
-import { getPublicInvalidDuplicateCardIds } from "./game/publicDuplicates";
+import { replacePublicDuplicateCards } from "./game/publicDuplicates";
 import type {
   Card,
   CardKind,
@@ -218,6 +218,7 @@ const INITIAL_NPC_EXCHANGE: NpcExchangeState = {
 const CONFETTI_VARIANT_COUNT = 10;
 const VERTICAL_CONFETTI_PIECES = Array.from({ length: 72 }, (_, index) => index);
 const SIDE_CONFETTI_PIECES = Array.from({ length: 56 }, (_, index) => index);
+const LOSS_EFFECT_MARKS = Array.from({ length: 38 }, (_, index) => index);
 const PRIMARY_SHOOT_KINDS: ReadonlySet<CardKind> = new Set([
   "layup",
   "dunk",
@@ -350,7 +351,9 @@ const TRANSLATIONS: Record<Language, Translation> = {
       andOne: (shootName, scoreValue, freeThrowBonus, score) =>
         `${shootName}: forced Foul, And 1 keeps ${scoreValue} + bonus FT ${freeThrowBonus} = ${score}.`,
       foul: (shootName, score) =>
-        `${shootName}: forced Foul, normal shot stops, FT conversion = ${score}.`,
+        `${shootName}: forced Foul, normal shot misses, ${
+          score > 0 ? `${score} free throw${score === 1 ? "" : "s"} made.` : "free throw missed."
+        }`,
       stopped: (shootName, defenseName, defenseValue, offenseValue) =>
         `${shootName}: stopped by ${defenseName} ${defenseValue} vs ${offenseValue}.`,
       beats: (shootName, offenseValue, defenseName, defenseValue, scoreValue) =>
@@ -364,7 +367,7 @@ const TRANSLATIONS: Record<Language, Translation> = {
       playDetails: "Play details",
       winnerReasonScore: "Higher score",
       winnerReasonCard: "Won by Card",
-      winner: (playerId) => (playerId === "A" ? "You Win!" : "NPC Wins!"),
+      winner: (playerId) => (playerId === "A" ? "You Win!" : "You Lose"),
       tieNumber: "Card",
       noAttempts: "No scoring attempt.",
       newGame: "New Game",
@@ -497,9 +500,11 @@ const TRANSLATIONS: Record<Language, Translation> = {
       andOne: (shootName, scoreValue, freeThrowBonus, score) =>
         `${shootName}: ファール発生、And 1で${scoreValue}点を保持 + ボーナスFT ${freeThrowBonus} = ${score}。`,
       foul: (shootName, score) =>
-        `${shootName}: ファール発生、通常シュートは停止、FT変換 = ${score}。`,
+        `${shootName}: ファール発生、通常シュートは失敗。${
+          score > 0 ? `フリースロー${score}本成功。` : "フリースロー失敗。"
+        }`,
       stopped: (shootName, defenseName, defenseValue, offenseValue) =>
-        `${shootName}: ${defenseName} ${defenseValue} vs ${offenseValue} で停止。`,
+        `${shootName}: ${defenseName} ${defenseValue} vs ${offenseValue} でブロック成功。`,
       beats: (shootName, offenseValue, defenseName, defenseValue, scoreValue) =>
         `${shootName}: ${offenseValue} が ${defenseName} ${defenseValue} を上回り、${scoreValue}点。`,
       noDefense: (shootName, scoreValue) =>
@@ -511,7 +516,7 @@ const TRANSLATIONS: Record<Language, Translation> = {
       playDetails: "プレイ詳細",
       winnerReasonScore: "スコア差",
       winnerReasonCard: "カード差",
-      winner: (playerId) => (playerId === "A" ? "あなたの勝利!" : "NPCの勝利!"),
+      winner: (playerId) => (playerId === "A" ? "あなたの勝利!" : "You Lose"),
       tieNumber: "カード",
       noAttempts: "得点プレイなし。",
       newGame: "ニューゲーム",
@@ -546,10 +551,6 @@ export default function App() {
     [gameState, phase],
   );
   const boostBadges = useMemo(() => buildBoostBadgeMap(resolution), [resolution]);
-  const invalidCommunityCardIds = useMemo(
-    () => getPublicInvalidDuplicateCardIds(gameState.community),
-    [gameState.community],
-  );
   const activeExchangePlayer = useMemo(
     () => getActiveExchangePlayer(phase, exchangeOrder, exchangeState, npcExchange),
     [exchangeOrder, exchangeState, npcExchange, phase],
@@ -603,12 +604,15 @@ export default function App() {
       setDealingStep(index + 1);
     }
 
+    const duplicateReplacement = replacePublicDuplicateCards(dealState.community, deck);
+    dealState.community = duplicateReplacement.publicCards;
+
     const dealtGameState: GameState = {
-      deck: [...deck],
+      deck: duplicateReplacement.deck,
       playerA: [...dealState.playerA],
       playerB: [...dealState.playerB],
       community: [...dealState.community],
-      discards: [],
+      discards: duplicateReplacement.discards,
     };
 
     setGameState(dealtGameState);
@@ -787,7 +791,6 @@ export default function App() {
                 <CardSlot
                   key={card?.id ?? `community-${index}`}
                   card={card}
-                  invalid={card ? invalidCommunityCardIds.has(card.id) : false}
                   boost={card ? boostBadges.get(card.id) : undefined}
                   slotLabel={t.table.board(index + 1)}
                   t={t}
@@ -1355,7 +1358,6 @@ function CardFace({
   t,
   onClick,
 }: CardFaceProps) {
-  const Icon = KIND_ICONS[card.kind];
   const pointMarkers = Array.from({ length: card.points ?? 0 }, (_, index) => index);
   const cornerValue = card.number ?? card.points ?? (card.kind === "andOne" ? 1 : undefined);
 
@@ -1383,7 +1385,7 @@ function CardFace({
       <span className="corner-number" aria-hidden="true">
         {cornerValue}
       </span>
-      <Icon className="card-icon" aria-hidden="true" strokeWidth={2.4} />
+      <span className={`card-art art-${card.kind}`} aria-hidden="true" />
       <span className="point-markers" aria-hidden="true">
         {pointMarkers.map((index) => (
           <span key={index} />
@@ -1459,18 +1461,22 @@ function GameReportOverlay({
 
   return (
     <section className={`game-report ${winnerClass}`} role="dialog" aria-live="polite" aria-label={t.report.title}>
-      {resolution.winner !== "draw" ? <VictoryConfetti /> : null}
-      <div className="game-report-hero">
-        <span>{t.report.title}</span>
-        <strong>{winnerText}</strong>
-        <div className="report-score-line">
-          <b>{resolution.playerA.score}</b>
-          <small>{t.score.player("A")}</small>
-          <em aria-hidden="true">-</em>
-          <b>{resolution.playerB.score}</b>
-          <small>{t.score.player("B")}</small>
+      {resolution.winner === "A" ? <VictoryConfetti /> : null}
+      {resolution.winner === "B" ? <LossEffect /> : null}
+      <div className="game-report-hero with-art">
+        <span className={`report-result-art ${winnerClass}`} aria-hidden="true" />
+        <div className="report-hero-copy">
+          <span>{t.report.title}</span>
+          <strong>{winnerText}</strong>
+          <div className="report-score-line">
+            <b>{resolution.playerA.score}</b>
+            <small>{t.score.player("A")}</small>
+            <em aria-hidden="true">-</em>
+            <b>{resolution.playerB.score}</b>
+            <small>{t.score.player("B")}</small>
+          </div>
+          <p>{reasonText}</p>
         </div>
-        <p>{reasonText}</p>
       </div>
 
       <div className="report-details" aria-label={t.report.playDetails}>
@@ -1483,6 +1489,26 @@ function GameReportOverlay({
         <span>{t.report.newGame}</span>
       </button>
     </section>
+  );
+}
+
+function LossEffect() {
+  return (
+    <div className="loss-effect" aria-hidden="true">
+      {LOSS_EFFECT_MARKS.map((mark) => (
+        <span
+          key={mark}
+          style={{
+            animationDelay: `${(mark % 9) * 78}ms`,
+            animationDuration: `${900 + (mark % 6) * 120}ms`,
+            left: `${2 + ((mark * 29) % 94)}%`,
+            top: `${8 + ((mark * 17) % 82)}%`,
+            "--loss-tilt": `${-28 + (mark % 8) * 8}deg`,
+            "--loss-drop": `${10 + (mark % 7) * 9}px`,
+          } as CSSProperties}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1548,9 +1574,11 @@ function ReportPlayer({
       </header>
       <div className="report-player-meta">
         <span>{t.report.outcome[result.source]}</span>
-        <span>
-          {t.report.tieNumber} #{result.shootTiebreaker}
-        </span>
+        {result.successfulShoot?.number !== undefined ? (
+          <span>
+            {t.report.tieNumber} #{result.successfulShoot.number}
+          </span>
+        ) : null}
       </div>
       <ol className="report-attempts">
         {result.attempts.length > 0 ? (
@@ -1607,6 +1635,10 @@ function formatWinnerReason(resolution: GameResolution, t: Translation): string 
   return resolution.tiebreakerUsed ? t.report.winnerReasonCard : t.report.winnerReasonScore;
 }
 
+function formatShootTiebreakerLabel(result: ScoringResult): string {
+  return result.successfulShoot?.number === undefined ? "-" : `#${result.successfulShoot.number}`;
+}
+
 function ScoreCell({
   playerId,
   result,
@@ -1620,7 +1652,7 @@ function ScoreCell({
     <div className="score-cell">
       <span className="score-player">{t.score.player(playerId)}</span>
       <strong>{result.score}</strong>
-      <span className="tie-number">#{result.shootTiebreaker}</span>
+      <span className="tie-number">{formatShootTiebreakerLabel(result)}</span>
     </div>
   );
 }
@@ -1629,7 +1661,7 @@ function ResultChip({ result }: { result: ScoringResult }) {
   return (
     <span className={`result-chip source-${result.source}`}>
       {result.score}
-      <small>#{result.shootTiebreaker}</small>
+      <small>{formatShootTiebreakerLabel(result)}</small>
     </span>
   );
 }

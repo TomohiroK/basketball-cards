@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createDeck, dealGame, DECK_SIZE } from "./deck";
 import { getAvailableCards, resolveGame, resolveScoring } from "./engine";
-import { getPublicInvalidDuplicateCardIds } from "./publicDuplicates";
+import { getPublicInvalidDuplicateCardIds, replacePublicDuplicateCards } from "./publicDuplicates";
 import type { Card, CardKind, GameState } from "./types";
 
 const deck = createDeck();
 
 describe("basketball poker engine", () => {
-  it("builds the confirmed 52-card deck", () => {
+  it("builds the tuned 51-card deck", () => {
     expect(deck).toHaveLength(DECK_SIZE);
+    expect(deck.filter((card) => card.kind === "andOne")).toHaveLength(6);
   });
 
   it("deals a Texas Hold'em style layout", () => {
@@ -20,7 +21,7 @@ describe("basketball poker engine", () => {
     expect(game.playerA).toHaveLength(2);
     expect(game.playerB).toHaveLength(2);
     expect(game.community).toHaveLength(4);
-    expect(game.deck).toHaveLength(44);
+    expect(game.deck).toHaveLength(DECK_SIZE - 8);
     expect(seenCardIds).toHaveLength(DECK_SIZE);
     expect(getAvailableCards(game, "playerA")).toHaveLength(6);
     expect(getAvailableCards(game, "playerB")).toHaveLength(6);
@@ -86,6 +87,23 @@ describe("basketball poker engine", () => {
 
     expect(result.score).toBe(2);
     expect(result.source).toBe("foulFreeThrows");
+  });
+
+  it("draws tied scores when either successful shoot has no card number", () => {
+    const game: GameState = {
+      playerA: [getCard("threePoint", 2), getCard("rimProtect", 1)],
+      playerB: [getCard("deepThree"), getCard("rimProtect", 2)],
+      community: [getCard("andOne"), getCard("help", 1), getCard("clutch", 1), getCard("freeThrow")],
+      deck: [],
+      discards: [],
+    };
+
+    const result = resolveGame(game);
+
+    expect(result.playerA.score).toBe(3);
+    expect(result.playerB.score).toBe(3);
+    expect(result.winner).toBe("draw");
+    expect(result.tiebreakerUsed).toBe(false);
   });
 
   it("uses the best Clutch copy to beat a matching defense", () => {
@@ -182,6 +200,27 @@ describe("basketball poker engine", () => {
     ]);
 
     expect(invalidCardIds.size).toBe(0);
+  });
+
+  it("replaces lower public duplicates until the field has no numbered duplicates", () => {
+    const result = replacePublicDuplicateCards(
+      [
+        getCard("clutch", 1),
+        getCard("clutch", 3),
+        getCard("rimProtect", 5),
+        getCard("rimProtect", 8),
+      ],
+      [getCard("faceGuard", 1), getCard("clutch", 2), getCard("layup", 1)],
+    );
+
+    expect(result.publicCards.map((card) => card.id)).toEqual([
+      "faceGuard-1",
+      "clutch-3",
+      "layup-1",
+      "rimProtect-8",
+    ]);
+    expect(result.discards.map((card) => card.id)).toEqual(["clutch-1", "rimProtect-5", "clutch-2"]);
+    expect(getPublicInvalidDuplicateCardIds(result.publicCards).size).toBe(0);
   });
 });
 

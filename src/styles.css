@@ -574,6 +574,7 @@ h1 {
 .role-rail {
   position: absolute;
   inset: 0 auto 0 0;
+  z-index: 2;
   width: 8px;
   background: var(--line);
 }
@@ -606,6 +607,7 @@ h1 {
   position: absolute;
   top: 10px;
   right: 10px;
+  z-index: 3;
   min-width: 24px;
   color: currentColor;
   font-size: 1.2rem;
@@ -620,10 +622,75 @@ h1 {
   filter: drop-shadow(0 10px 16px rgba(0, 0, 0, 0.42));
 }
 
+.card-art {
+  position: relative;
+  z-index: 1;
+  width: 76%;
+  aspect-ratio: 1.18;
+  border: 2px solid rgba(255, 255, 255, 0.86);
+  border-radius: 6px;
+  background-color: #151515;
+  background-position: center;
+  background-size: cover;
+  box-shadow:
+    0 4px 0 rgba(31, 39, 51, 0.2),
+    0 10px 16px rgba(31, 39, 51, 0.2);
+  image-rendering: pixelated;
+}
+
+.art-freeThrow {
+  background-image: url("/card-art/free-throw.png");
+}
+
+.art-layup {
+  background-image: url("/card-art/layup.png");
+}
+
+.art-dunk {
+  background-image: url("/card-art/dunk.png");
+}
+
+.art-threePoint {
+  background-image: url("/card-art/three-point.png");
+}
+
+.art-deepThree {
+  background-image: url("/card-art/deep-three.png");
+}
+
+.art-clutch {
+  background-image: url("/card-art/clutch.png");
+}
+
+.art-andOne {
+  background-image: url("/card-art/and-one.png");
+}
+
+.art-rimProtect {
+  background-image: url("/card-art/rim-protect.png");
+}
+
+.art-faceGuard {
+  background-image: url("/card-art/face-guard.png");
+}
+
+.art-help {
+  background-image: url("/card-art/help.png");
+}
+
+.art-foul {
+  background-image: url("/card-art/foul.png");
+}
+
+.art-noFoul {
+  background-image: url("/card-art/no-foul.png");
+}
+
 .point-markers {
   position: absolute;
   right: 10px;
   bottom: 10px;
+  z-index: 3;
   display: flex;
   gap: 4px;
 }
@@ -1463,16 +1530,16 @@ body {
 .card-back {
   border-color: #ffffff;
   background:
-    linear-gradient(90deg, transparent 47%, rgba(255, 255, 255, 0.55) 48% 52%, transparent 53%),
-    linear-gradient(0deg, transparent 47%, rgba(255, 255, 255, 0.55) 48% 52%, transparent 53%),
-    #ff8a2a;
+    linear-gradient(180deg, rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.18)),
+    url("/card-art/basketball.png") center / cover;
   box-shadow:
     0 6px 0 rgba(180, 76, 9, 0.28),
     0 12px 20px rgba(117, 80, 34, 0.16);
+  image-rendering: pixelated;
 }
 
 .card-back-mark {
-  border-color: rgba(255, 255, 255, 0.82);
+  display: none;
 }
 
 .card-icon {
@@ -2108,9 +2175,9 @@ body {
 
 .game-report.npc-win {
   background:
-    radial-gradient(circle at 18% 10%, rgba(255, 230, 109, 0.86), transparent 28%),
-    radial-gradient(circle at 82% 16%, rgba(255, 138, 42, 0.46), transparent 30%),
-    linear-gradient(180deg, #fffdf5, #ffd98a);
+    radial-gradient(circle at 18% 10%, rgba(255, 232, 210, 0.86), transparent 28%),
+    radial-gradient(circle at 82% 16%, rgba(81, 91, 108, 0.28), transparent 30%),
+    linear-gradient(180deg, #fff9f0, #dbe3eb);
 }
 
 .game-report.draw {
@@ -2120,8 +2187,7 @@ body {
     linear-gradient(180deg, #ffffff, #e8edf2);
 }
 
-.game-report.you-win::before,
-.game-report.npc-win::before {
+.game-report.you-win::before {
   position: absolute;
   inset: 0;
   z-index: 3;
@@ -2140,6 +2206,21 @@ body {
   animation: celebration-spark 1100ms ease-in-out infinite alternate;
 }
 
+.game-report.npc-win::before {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(118deg, transparent 0 18%, rgba(31, 39, 51, 0.1) 19% 20%, transparent 21% 100%),
+    linear-gradient(64deg, transparent 0 42%, rgba(231, 97, 20, 0.18) 43% 44%, transparent 45% 100%),
+    radial-gradient(circle at 18% 24%, rgba(31, 39, 51, 0.22), transparent 12%),
+    radial-gradient(circle at 82% 72%, rgba(231, 97, 20, 0.18), transparent 18%);
+  opacity: 0.72;
+  animation: loss-screen-pulse 900ms ease-in-out infinite alternate;
+}
+
 .game-report-hero {
   position: relative;
   z-index: 6;
@@ -2153,13 +2234,61 @@ body {
   text-align: center;
 }
 
-.game-report-hero > span {
+.game-report-hero.with-art {
+  grid-template-columns: minmax(96px, 0.34fr) minmax(0, 1fr);
+  align-items: center;
+  justify-items: stretch;
+  text-align: left;
+}
+
+.report-result-art {
+  justify-self: center;
+  width: min(100%, 146px);
+  aspect-ratio: 1;
+  border: 3px solid #111823;
+  border-radius: 8px;
+  background-color: #151515;
+  background-position: center;
+  background-size: cover;
+  box-shadow:
+    0 8px 0 rgba(31, 39, 51, 0.2),
+    0 16px 26px rgba(31, 39, 51, 0.22);
+  image-rendering: pixelated;
+}
+
+.report-result-art.you-win {
+  background-image: url("/result-art/victory.png");
+}
+
+.report-result-art.npc-win {
+  background-image: url("/result-art/defeat.png");
+  filter: saturate(0.95) contrast(1.04);
+}
+
+.report-result-art.draw {
+  background-image: url("/result-art/overtime.png");
+}
+
+.report-hero-copy {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: center;
+}
+
+.game-report-hero.with-art .report-hero-copy {
+  justify-items: start;
+  text-align: left;
+}
+
+.report-hero-copy > span {
   color: #e76114;
   font-size: 0.78rem;
   font-weight: 1000;
 }
 
-.game-report-hero > strong {
+.report-hero-copy > strong {
   max-width: 100%;
   overflow-wrap: anywhere;
   font-size: clamp(1.9rem, 8.6vw, 3.2rem);
@@ -2170,7 +2299,14 @@ body {
     0 10px 20px rgba(117, 80, 34, 0.18);
 }
 
-.game-report-hero p {
+.game-report.npc-win .report-hero-copy > strong {
+  color: #3a2731;
+  text-shadow:
+    0 4px 0 rgba(255, 255, 255, 0.84),
+    0 10px 20px rgba(31, 39, 51, 0.18);
+}
+
+.report-hero-copy p {
   margin: 0;
   color: #4d6578;
   font-size: 0.72rem;
@@ -2337,6 +2473,38 @@ body {
   pointer-events: none;
 }
 
+.loss-effect {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.loss-effect span {
+  position: absolute;
+  width: 4px;
+  height: 36px;
+  border-radius: 999px;
+  background: rgba(58, 39, 49, 0.24);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24);
+  animation: loss-streak linear infinite;
+  transform: rotate(var(--loss-tilt, -18deg));
+}
+
+.loss-effect span:nth-child(3n) {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(231, 97, 20, 0.22);
+}
+
+.loss-effect span:nth-child(4n) {
+  width: 28px;
+  height: 3px;
+  background: rgba(31, 39, 51, 0.22);
+}
+
 .confetti-piece {
   position: absolute;
   width: 11px;
@@ -2453,6 +2621,34 @@ body {
   }
 }
 
+@keyframes loss-screen-pulse {
+  from {
+    opacity: 0.46;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0.82;
+    transform: translateY(1px) scale(1.01);
+  }
+}
+
+@keyframes loss-streak {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -8px, 0) rotate(var(--loss-tilt, -18deg));
+  }
+
+  18% {
+    opacity: 0.9;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(-12px, var(--loss-drop, 42px), 0) rotate(var(--loss-tilt, -18deg));
+  }
+}
+
 @keyframes confetti-fall {
   0% {
     opacity: 0;
@@ -2508,11 +2704,28 @@ body {
     padding: 9px 8px 8px;
   }
 
-  .game-report-hero > span {
+  .game-report-hero.with-art {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .report-result-art {
+    width: 94px;
+  }
+
+  .report-hero-copy {
+    gap: 4px;
+  }
+
+  .report-hero-copy > span {
     font-size: 0.9rem;
   }
 
-  .game-report-hero p {
+  .report-hero-copy > strong {
+    font-size: clamp(1.65rem, 7.8vw, 2.4rem);
+  }
+
+  .report-hero-copy p {
     font-size: 0.86rem;
   }
 
