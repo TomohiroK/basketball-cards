@@ -1382,9 +1382,11 @@ function CardFace({
         </span>
       ) : null}
       <span className="role-rail" aria-hidden="true" />
-      <span className="corner-number" aria-hidden="true">
-        {cornerValue}
-      </span>
+      {cornerValue !== undefined ? (
+        <span className="corner-number" aria-hidden="true">
+          {cornerValue}
+        </span>
+      ) : null}
       <span className={`card-art art-${card.kind}`} aria-hidden="true" />
       <span className="point-markers" aria-hidden="true">
         {pointMarkers.map((index) => (
